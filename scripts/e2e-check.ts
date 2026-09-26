@@ -1,13 +1,15 @@
 /**
- * End-to-end smoke check for payroll.
+ * End-to-end smoke check for Private Payroll.
  *
- * Reconnects to the deployed contract, reads its ledger state, and exits 0
- * on success. Used by `npm run test:e2e` and by the project's CI workflows.
+ * Reconnects to the deployed contract, reads its public ledger state
+ * (counters, batch tag — never amounts), and exits 0 on success.
+ * Used by `npm run test:e2e` and by the project's CI workflows.
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WebSocket } from 'ws';
+import { Buffer } from 'buffer';
 
 import { findDeployedContract } from '@midnight-ntwrk/midnight-js-contracts';
 import { httpClientProofProvider } from '@midnight-ntwrk/midnight-js-http-client-proof-provider';
@@ -21,8 +23,8 @@ import { CompiledContract } from '@midnight-ntwrk/midnight-js-protocol/compact-j
 // @ts-expect-error wallet sync requires WebSocket
 globalThis.WebSocket = WebSocket;
 
-// Must match the privateStateId used at deploy time (witness-free → empty state).
-const PRIVATE_STATE_ID = 'helloWorldPrivateState';
+// Must match the privateStateId used at deploy time.
+const PRIVATE_STATE_ID = 'payrollPrivateState';
 
 // ─── Network configuration ─────────────────────────────────────────────────────
 
@@ -33,6 +35,14 @@ const SEED = WALLET.seed;
   const notice = formatWalletBackupNotice(WALLET, network);
   if (notice) console.log(notice);
 }
+
+function ownerKeyBytes(): Uint8Array {
+  const raw = Buffer.from(SEED, 'hex');
+  const out = new Uint8Array(32);
+  out.set(raw.subarray(0, 32));
+  return out;
+}
+const OWNER_KEY = ownerKeyBytes();
 
 function fail(msg: string): never {
   console.error(`❌ e2e-check failed: ${msg}`);
@@ -56,13 +66,16 @@ async function main() {
 
   // 2. Build wallet and providers
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
-  const zkConfigPath = path.resolve(__dirname, '..', 'contracts', 'managed', 'hello-world');
+  const zkConfigPath = path.resolve(__dirname, '..', 'contracts', 'managed', 'payroll');
   const contractPath = path.join(zkConfigPath, 'contract', 'index.js');
   if (!fs.existsSync(contractPath)) fail('Compiled contract missing — run `npm run compile`.');
-  const HelloWorld = await import(pathToFileURL(contractPath).href);
-  const compiledContract = CompiledContract.make('hello-world', HelloWorld.Contract).pipe(
-    CompiledContract.withVacantWitnesses,
-    CompiledContract.withCompiledFileAssets(zkConfigPath),
+  const Payroll = await import(pathToFileURL(contractPath).href);
+  const CC = CompiledContract as any;
+  const compiledContract = CC.make('payroll', Payroll.Contract).pipe(
+    CC.withWitnesses({
+      ownerKey: (ctx: any) => [ctx?.privateState ?? {}, OWNER_KEY] as const,
+    }),
+    CC.withCompiledFileAssets(zkConfigPath),
   );
 
   const walletCtx = await createWallet({ network, networkConfig, seed: SEED });
@@ -86,7 +99,7 @@ async function main() {
 
   const providers = {
     privateStateProvider: levelPrivateStateProvider({
-      privateStateStoreName: 'hello-world-state',
+      privateStateStoreName: 'payroll-state',
       accountId: walletCtx.unshieldedKeystore.getBech32Address().toString(),
       // SDK requires ≥16 chars. e2e-check is read-only so we don't expose
       // the env-var override here — match the deploy script's local-devnet default.
@@ -114,11 +127,23 @@ async function main() {
 
   // 4. Read the on-chain contract state via the public data provider — proves
   // the contract is indexed and queryable on the chain itself, not just that
-  // we know how to construct the local handle.
+  // we know how to construct the local handle. Assert the payroll public
+  // shape (counters + batch tag) decodes; amounts must NOT be present.
   const onChainState = await providers.publicDataProvider.queryContractState(deployment.address);
   if (!onChainState) {
     await walletCtx.wallet.stop();
     fail(`queryContractState returned null for ${deployment.address}`);
+  }
+  try {
+    const ledger = Payroll.ledger(onChainState.data);
+    if (typeof ledger.employeeCount !== 'bigint' || typeof ledger.batchCount !== 'bigint') {
+      fail('payroll ledger counters missing or wrong type');
+    }
+    if (typeof ledger.batchTag !== 'string') fail('payroll ledger batchTag missing');
+    console.log(`   employees: ${ledger.employeeCount}  batches: ${ledger.batchCount}  tag: "${ledger.batchTag}"`);
+  } catch (err: any) {
+    await walletCtx.wallet.stop();
+    fail(`ledger decode threw: ${err?.message ?? err}`);
   }
 
   console.log(`✅ e2e-check passed`);

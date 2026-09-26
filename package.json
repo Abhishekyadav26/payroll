@@ -6,11 +6,12 @@
   "author": "",
   "license": "MIT",
   "scripts": {
-    "compile": "compact compile contracts/hello-world.compact contracts/managed/hello-world",
+    "compile": "compact compile +0.31.1 contracts/payroll.compact contracts/managed/payroll",
     "build": "npx tsc --noEmit || true",
     "setup": "npx tsx src/setup.ts",
     "deploy": "npx tsx src/deploy.ts",
     "cli": "npx tsx src/cli.ts",
+    "frontend:dev": "npm run dev --prefix frontend",
     "check-balance": "npx tsx src/check-balance.ts",
     "network": "npx tsx src/network.ts",
     "proof-server:start": "docker compose up -d",
@@ -43,6 +44,9 @@
   },
   "engines": {
     "node": ">=22.0.0"
+  },
+  "overrides": {
+    "@midnight-ntwrk/onchain-runtime-v3": "3.1.1"
   },
   "keywords": ["midnight", "blockchain", "zero-knowledge", "privacy"]
 }

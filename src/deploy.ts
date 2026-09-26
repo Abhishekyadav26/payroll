@@ -23,9 +23,18 @@ import { CompiledContract } from '@midnight-ntwrk/midnight-js-protocol/compact-j
 // @ts-expect-error Required for wallet sync
 globalThis.WebSocket = WebSocket;
 
-// Identifier under which this contract's private state is stored. The
-// hello-world contract has no witnesses, so its private state is empty ({}).
-const PRIVATE_STATE_ID = 'helloWorldPrivateState';
+// Identifier under which this contract's private state is stored.
+const PRIVATE_STATE_ID = 'payrollPrivateState';
+
+// Owner key: 32-byte employer secret, derived deterministically from the
+// wallet seed so redeploys from the same wallet reuse the same owner identity.
+// The salary amounts stay private; only this owner id is public on ledger.
+function ownerKeyBytes(): Uint8Array {
+  const raw = Buffer.from(SEED, 'hex');
+  const out = new Uint8Array(32);
+  out.set(raw.subarray(0, 32));
+  return out;
+}
 
 // Upper bound on the DUST wait. A healthy local devnet produces DUST within
 // seconds of registration; anything approaching this means the node, the
@@ -77,7 +86,7 @@ async function waitForProofServer(maxAttempts = 60, delayMs = 2000): Promise<boo
 // ─── Compiled contract loading ─────────────────────────────────────────────────
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const zkConfigPath = path.resolve(__dirname, '..', 'contracts', 'managed', 'hello-world');
+const zkConfigPath = path.resolve(__dirname, '..', 'contracts', 'managed', 'payroll');
 const contractPath = path.join(zkConfigPath, 'contract', 'index.js');
 
 if (!fs.existsSync(contractPath)) {
@@ -85,11 +94,18 @@ if (!fs.existsSync(contractPath)) {
   process.exit(1);
 }
 
-const HelloWorld = await import(pathToFileURL(contractPath).href);
+const Payroll = await import(pathToFileURL(contractPath).href);
 
-const compiledContract = CompiledContract.make('hello-world', HelloWorld.Contract).pipe(
-  CompiledContract.withVacantWitnesses,
-  CompiledContract.withCompiledFileAssets(zkConfigPath),
+const OWNER_KEY = ownerKeyBytes();
+// Witnesses return [nextPrivateState, value]. Private state is empty ({}),
+// so we thread it through unchanged.
+const witnesses = {
+  ownerKey: (ctx: any) => [ctx?.privateState ?? {}, OWNER_KEY] as const,
+};
+const CC = CompiledContract as any;
+const compiledContract = CC.make('payroll', Payroll.Contract).pipe(
+  CC.withWitnesses(witnesses),
+  CC.withCompiledFileAssets(zkConfigPath),
 );
 
 // ─── Providers ─────────────────────────────────────────────────────────────────
@@ -123,7 +139,7 @@ async function createProviders(walletCtx: WalletContext) {
 
   return {
     privateStateProvider: levelPrivateStateProvider({
-      privateStateStoreName: 'hello-world-state',
+      privateStateStoreName: 'payroll-state',
       accountId,
       privateStoragePasswordProvider: () => privateStatePassword,
     }),
@@ -313,15 +329,12 @@ async function main() {
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      // Midnight.js 4.1.x supplies private state via privateStateId +
-      // initialPrivateState (empty here — the hello-world contract has no
-      // witnesses). args is the contract constructor's arguments: empty for
-      // hello-world's no-arg constructor. (Statically-typed contracts can omit
-      // args entirely; this script loads the contract dynamically, so the
-      // conditional args type widens to any[] and an explicit [] is required.)
+      // Payroll constructor takes (ownerKey, initTag). Amounts are never
+      // constructor args — they enter later via registerEmployee as private
+      // circuit parameters, so the ledger only ever holds commitments.
       deployed = await deployContract(providers, {
         compiledContract: compiledContract as any,
-        args: [],
+        args: [OWNER_KEY, 'genesis'],
         privateStateId: PRIVATE_STATE_ID,
         initialPrivateState: {},
       });

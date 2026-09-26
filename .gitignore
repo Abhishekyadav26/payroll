@@ -58,3 +58,15 @@ temp/
 
 # Midnight wallet sync state (per-network serialized wallet state cache)
 .midnight-wallet-state/
+
+# Payroll demo key-management (salary openings — keep private)
+.payroll-allocations.*.json
+
+# LevelDB private-state stores (sensitive, per-run)
+midnight-level-db/
+frontend/midnight-level-db/
+
+# Next.js frontend
+frontend/.next/
+frontend/out/
+*.tsbuildinfo

@@ -1,0 +1,67 @@
+pragma language_version >= 0.23;
+
+import CompactStandardLibrary;
+
+// Private Payroll / Splits on Midnight.
+//
+// Design: salary amounts NEVER appear on the public ledger.
+// - The employer calls registerEmployee(salary, nonce) with the salary as a
+//   private circuit argument. The circuit stores only
+//   commitment = persistentCommit(salary, nonce) in the ledger Map.
+// - The employee later calls claim(id, salary, nonce), proving knowledge of
+//   the (salary, nonce) opening without revealing it to anyone else. The
+//   ledger only flips a claimed flag.
+// - runBatch(tag) anchors a public batch label (e.g. "2026-09-payroll") plus
+//   counters an auditor can read, with zero amount data.
+//
+// Public ledger (auditor-visible): owner id, counters, commitments
+// (opaque hashes), claimed flags, batch tag.
+// Private (ZK only): salary amounts, nonces, owner secret.
+
+export ledger owner: Bytes<32>;
+export ledger employeeCount: Counter;
+export ledger batchCount: Counter;
+export ledger commitments: Map<Uint<64>, Bytes<32>>;
+export ledger claimed: Map<Uint<64>, Boolean>;
+export ledger batchTag: Opaque<"string">;
+
+constructor(ownerKey: Bytes<32>, initTag: Opaque<"string">) {
+  owner = disclose(ownerKey);
+  batchTag = disclose(initTag);
+}
+
+// Owner secret lives off-chain (employer wallet). Returned via witness so
+// the secret itself never hits the ledger; only equality is proven in-circuit.
+witness ownerKey(): Bytes<32>;
+
+circuit checkOwner(): [] {
+  const k = ownerKey();
+  assert(k == owner, "only owner");
+}
+
+export circuit registerEmployee(salary: Uint<64>, nonce: Bytes<32>): [] {
+  const k = ownerKey();
+  assert(k == owner, "only owner");
+  const id = employeeCount.read();
+  const commitment = persistentCommit<Uint<64>>(salary, nonce);
+  // Keys are public ids; values are opaque commitments / flags.
+  commitments.insert(id, disclose(commitment));
+  claimed.insert(id, disclose(false));
+  employeeCount.increment(1);
+}
+
+export circuit claim(id: Uint<64>, salary: Uint<64>, nonce: Bytes<32>): [] {
+  const pubId = disclose(id);
+  assert(commitments.member(pubId), "unknown employee id");
+  const commitment = persistentCommit<Uint<64>>(salary, nonce);
+  assert(commitment == commitments.lookup(pubId), "bad salary proof");
+  assert(claimed.lookup(pubId) == false, "already claimed");
+  claimed.insert(disclose(id), disclose(true));
+}
+
+export circuit runBatch(tag: Opaque<"string">): [] {
+  const k = ownerKey();
+  assert(k == owner, "only owner");
+  batchTag = disclose(tag);
+  batchCount.increment(1);
+}

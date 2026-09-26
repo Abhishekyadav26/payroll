@@ -1,0 +1,18 @@
+# Local port workaround for THIS machine (see README).
+#
+# Something outside Docker already listens on host port 8088, so the stock
+# `docker compose up` fails with "address already in use" for the indexer.
+# Use this override file explicitly — it changes nothing inside the
+# containers, only the host-side port mapping (8089 instead of 8088):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.8089.yml up -d --wait
+#
+# …and point the app at it with:
+#
+#   export MIDNIGHT_INDEXER_URL=http://127.0.0.1:8089/api/v4/graphql
+#   export MIDNIGHT_INDEXER_WS_URL=ws://127.0.0.1:8089/api/v4/graphql/ws
+#
+services:
+  indexer:
+    ports: !override
+      - "8089:8088"
